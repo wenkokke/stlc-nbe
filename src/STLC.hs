@@ -10,6 +10,7 @@ module STLC
     check,
 
     -- * Normalization by substitution
+    -- $normalizationBySubstitution
     Sub,
     extSub,
     appSub,
@@ -17,6 +18,7 @@ module STLC
     nbs,
 
     -- * Normalization by evalution
+    -- $normalizationByEvaluation
     Spine (..),
     Val (..),
     Env (..),
@@ -26,6 +28,7 @@ module STLC
     nbe,
 
     -- * Properties
+    -- $properties
     prop_NbsPreservesTypes,
     prop_NbePreservesTypes,
     prop_NbsEqNbe,
@@ -117,8 +120,6 @@ data Expr i
 
 deriveEnumerable ''Expr
 
--- Type Checking
-
 -- | Typing contexts are total maps from the deBruijn indices to types.
 type Ctx i = i -> Type
 
@@ -138,7 +139,7 @@ check ctx (a :-> b) (Lam e) = check (ctx |> a) b e
 check ctx _ (Lam e) = false
 check ctx b (App e1 e2 a) = check ctx (a :-> b) e1 &&& check ctx a e2
 
--- * Normalization by Substitution
+-- $normalizationBySubstitution
 
 type Sub i j = i -> Expr j
 
@@ -166,7 +167,7 @@ step = \case
 nbs :: Expr i -> Expr i
 nbs e = maybe e nbs (step e)
 
--- Normalization by Evaluation
+-- $normalizationByEvaluation
 
 data Spine i
   = SId
@@ -214,7 +215,7 @@ quoteSpine e = \case
 nbe :: Expr Z -> Expr Z
 nbe e = quote (eval @Z @Z Nil e)
 
--- Tests
+-- $properties
 
 prop_NbsPreservesTypes :: Expr Z -> Cool
 prop_NbsPreservesTypes e = check fromZ (Iota :-> Iota) e ==> check fromZ (Iota :-> Iota) (nbs e)
