@@ -1,36 +1,45 @@
 cabal-version:      2.4
 name:               stlc-nbe
 version:            0.1.0.0
-
--- A short (one-line) description of the package.
--- synopsis:
-
--- A longer description of the package.
--- description:
-
--- A URL where users can report bugs.
--- bug-reports:
-
--- The license under which the package is released.
--- license:
 author:             Wen Kokke
 maintainer:         wenkokke@users.noreply.github.com
-
--- A copyright notice.
--- copyright:
--- category:
 extra-source-files:
     CHANGELOG.md
     README.md
 
-executable stlc-nbe
-    main-is:          Main.hs
+source-repository head
+  type: git
+  location: https://github.com/wenkokke/stlc-nbe
 
-    -- Modules included in this executable, other than Main.
-    -- other-modules:
+library
+    exposed-modules:    STLC
+    hs-source-dirs:     src
+    build-depends:      base        >=4.7 && <5
+                      , lazy-search ==0.1.2.1
+                      , size-based  ==0.1.2.1
+    default-extensions: DeriveFunctor
+                      , EmptyCase
+                      , EmptyDataDeriving
+                      , FlexibleContexts
+                      , FlexibleInstances
+                      , GADTs
+                      , LambdaCase
+                      , PatternSynonyms
+                      , RankNTypes
+                      , ScopedTypeVariables
+                      , StandaloneDeriving
+                      , TypeApplications
+    default-language:   Haskell2010
 
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
-    build-depends:    base ^>=4.15.0.0
-    hs-source-dirs:   app
-    default-language: Haskell2010
+test-suite test-eq-nbs-nbe
+    type:               exitcode-stdio-1.0
+    main-is:            Spec.hs
+    hs-source-dirs:     test
+    build-depends:      base        >=4.7 && <5
+                      , HUnit
+                      , lazy-search ==0.1.2.1
+                      , size-based  ==0.1.2.1
+                      , stlc-nbe
+    default-extensions: LambdaCase
+                      , TypeApplications
+    default-language:   Haskell2010
