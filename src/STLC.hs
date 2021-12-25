@@ -12,6 +12,7 @@ module STLC
     Type (..),
     Expr (..),
     Ctx,
+    nil,
     (|>),
     check,
 
@@ -20,8 +21,7 @@ module STLC
     Sub,
     ext,
     sub,
-    sub0,
-    pattern Red,
+    sub1,
     step,
     nbs,
 
@@ -44,7 +44,7 @@ module STLC
 where
 
 import Control.Enumerable
-import Data.Coolean (Cool, Coolean (toCool), false, (&&&), (==>))
+import Data.Coolean (Cool, Coolean (..), false, (&&&), (==>))
 
 -- $finiteTypes
 --
@@ -137,6 +137,8 @@ data Type
     Type :-> Type
   deriving (Eq, Show)
 
+infixr 4 :->
+
 deriveEnumerable ''Type
 
 -- | The type of expressions with @i@ free variables.
@@ -173,19 +175,34 @@ deriveEnumerable ''Expr
 --   Typing contexts are total maps from the deBruijn indices to types.
 type Ctx i = i -> Type
 
--- | Extend a typing context with an additional type, mapped to the 0/th/ variable.
+-- | The empty context.
+nil :: Ctx Z
+nil = fromZ
+
+-- | Extend a typing context with an additional type.
 --
 -- > (ctx |> a) FZ     = a
 -- > (ctx |> a) (FS i) = ctx i
 (|>) :: Ctx i -> Type -> Ctx (S i)
 (|>) = flip fromS
 
+infixr 5 |>
+
 -- | Check if an expression has the given type under the given typing context. The algorithm is straightforward, modulo the conversion between 'Bool' and concurrent booleans, /i.e./, 'Cool', which is omitted here:
 --
--- > check ctx a         (Var i)       = a == ctx i
--- > check ctx (a :-> b) (Lam e)       = check (ctx |> a) b e
--- > check ctx _         (Lam e)       = False
--- > check ctx b         (App e1 e2 a) = check ctx (a :-> b) e1 && check ctx a e2
+--   > check ctx a         (Var i)       = a == ctx i
+--   > check ctx (a :-> b) (Lam e)       = check (ctx |> a) b e
+--   > check ctx _         (Lam e)       = False
+--   > check ctx b         (App e1 e2 a) = check ctx (a :-> b) e1 && check ctx a e2
+--
+--   For example:
+--
+-- >>> toBool $ check nil (Iota :-> Iota) (Lam (Var 0))
+-- True
+-- >>> toBool $ check nil Iota (Lam (Var 0))
+-- False
+-- >>> toBool $ check nil (Iota :-> Iota :-> Iota) (Lam (Lam (Var 1)))
+-- True
 check :: Ctx i -> Type -> Expr i -> Cool
 check ctx a (Var i) = toCool (a == ctx i)
 check ctx (a :-> b) (Lam e) = check (ctx |> a) b e
@@ -193,17 +210,33 @@ check _ _ (Lam _) = false
 check ctx b (App e1 e2 a) = check ctx (a :-> b) e1 &&& check ctx a e2
 
 -- $normalizationBySubstitution
-
--- | The type of substitutions from expressions with @i@ free variables to expressions with /j/ free variables.
 --
---   Substitutions are total maps from deBruijn indices bound by @i@ to expressions with /j/ free variables.
+-- This section implements normalization by substitution.
+-- This works by repeatedly traversing the term.
+-- Any time we encounter a redex of the form \((\lambda x.e_1)\;e_2\), we replace all occurrences of \(x\) in \(e_1\) by \(e_2\).
+-- We continue to do this until there are no more redexes.
+--
+-- We define simultaneous substitution ('sub'), which replaces all variables in an expression.
+-- We define single substitution ('sub1'), which only replaces the @0@/th/ variable, using 'sub'.
+-- This may seem like a roundabout way to implement single substitution, but it is actually a lot easier!
+--
+-- We define a stepping function ('step'), which reduces the topmost, leftmost redex.
+-- Finally, we define normalization by substitution ('nbs') by iteratively applying 'step' until there are no more redexes.
+
+-- | The type of simultaneous substitutions.
+--
+--   Simultaneous substitutions are total maps from deBruijn indices bound by @i@ to expressions with @j@ free variables.
 type Sub i j = i -> Expr j
 
--- | Extend a substitution with another variable, which is mapped to itself.
+-- | Extend a simultaneous substitution with an additional variable, mapped to itself.
 ext :: Sub i j -> Sub (S i) (S j)
 ext s = fromS (Var FZ) (fmap FS . s)
 
--- | Apply a substitution to an expression.
+-- | Apply a simultaneous substitution @s@ to an expression, which replaces every variable @i@ with @s i@.
+--
+--   > sub s (Var i)       = s i
+--   > sub s (Lam e)       = Lam (sub (ext s) e)
+--   > sub s (App e1 e2 t) = App (sub s e1) (sub s e2) t
 sub :: Sub i j -> Expr i -> Expr j
 sub s = \case
   Var i -> s i
@@ -213,36 +246,42 @@ sub s = \case
 -- | Replace all occurrences of the 0/th/ variable in the 2/nd/ expression with the 1/st/ expression. For example:
 --
 -- >>> let e1 = Lam (Var 0)
--- >>> let e2 = App (Var 0) (Lam (App (Var 1) (Var 0) Iota)) Iota
--- >>> sub0 @Z e1 e2
--- App (Lam (Var 0)) (Lam (App (Lam (Var 0)) (Var 0) Iota)) Iota
-sub0 :: Expr i -> Expr (S i) -> Expr i
-sub0 e = sub (fromS e Var)
-
--- | The pattern of redexes, /i.e./, \((\lambda x.e_1)\;e_2\) or @'App' ('Lam' e1) e2 t@.
-pattern Red :: Expr (S i) -> Expr i -> Type -> Expr i
-pattern Red e1 e2 t = App (Lam e1) e2 t
+-- >>> let e2 = App (Var 0) (Lam (App (Var 1) (Var 0) Iota)) (Iota :-> Iota)
+-- >>> sub1 @Z e1 e2
+-- App (Lam (Var 0)) (Lam (App (Lam (Var 0)) (Var 0) Iota)) (Iota :-> Iota)
+sub1 :: Expr i -> Expr (S i) -> Expr i
+sub1 e = sub (fromS e Var)
 
 -- | Reduce the expression by one step, and return 'Just' the result. If no redex exists, return 'Nothing'.
 --
 --   The algorithm can be written as follows, using idiom brackets:
 --
--- > step (Var n)       = Nothing
--- > step (Lam e)       = ⟦ Lam (step e) ⟧
--- > step (Red e1 e2 t) = ⟦ sub0 e2 e1 ⟧
--- > step (App e1 e2 t) = ⟦ App (step e1) e2 t ⟧ <|> ⟦ App e1 (step e2) t ⟧
+--   > step (Var n)             = Nothing
+--   > step (Lam e)             = ⟦ Lam (step e) ⟧
+--   > step (App (Lam e1) e2 t) = ⟦ sub1 e2 e1 ⟧
+--   > step (App e1 e2 t)       = ⟦ App (step e1) e2 t ⟧ <|> ⟦ App e1 (step e2) t ⟧
+--
+--   For example:
+--
+-- >>> step @Z (App (Lam (Var 0)) (Lam (App (Lam (Var 0)) (Var 0) Iota)) (Iota :-> Iota))
+-- Just (Lam (App (Lam (Var 0)) (Var 0) Iota))
+-- >>> step @Z (Lam (App (Lam (Var 0)) (Var 0) Iota))
+-- Just (Lam (Var 0))
 step :: Expr i -> Maybe (Expr i)
 step = \case
   Var _ -> empty
   Lam e -> Lam <$> step e
-  Red e1 e2 _ -> pure (sub0 e2 e1)
+  App (Lam e1) e2 _ -> pure (sub1 e2 e1)
   App e1 e2 t ->
     (App <$> step e1 <*> pure e2 <*> pure t)
       <|> (App e1 <$> step e2 <*> pure t)
 
 -- | Reduce the expression using 'step' until no more redexes exist.
 --
---   Implements normalization by substitution.
+--   For example:
+--
+-- >>> nbs @Z (App (Lam (Var 0)) (Lam (App (Lam (Var 0)) (Var 0) Iota)) (Iota :-> Iota))
+-- Lam (Var 0)
 nbs :: Expr i -> Expr i
 nbs e = maybe e nbs (step e)
 
@@ -297,10 +336,10 @@ nbe e = quote (eval @Z @Z Nil e)
 -- $properties
 
 prop_NbsPreservesTypes :: Expr Z -> Cool
-prop_NbsPreservesTypes e = check fromZ (Iota :-> Iota) e ==> check fromZ (Iota :-> Iota) (nbs e)
+prop_NbsPreservesTypes e = check nil (Iota :-> Iota) e ==> check nil (Iota :-> Iota) (nbs e)
 
 prop_NbePreservesTypes :: Expr Z -> Cool
-prop_NbePreservesTypes e = check fromZ (Iota :-> Iota) e ==> check fromZ (Iota :-> Iota) (nbs e)
+prop_NbePreservesTypes e = check nil (Iota :-> Iota) e ==> check nil (Iota :-> Iota) (nbs e)
 
 prop_NbsEqNbe :: Expr Z -> Cool
-prop_NbsEqNbe e = check fromZ (Iota :-> Iota) e ==> nbs e == nbe e
+prop_NbsEqNbe e = check nil (Iota :-> Iota) e ==> nbs e == nbe e
