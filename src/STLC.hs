@@ -1,7 +1,13 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_HADDOCK prune #-}
 
 module STLC
-  ( -- * Types and expressions
+  ( -- * Variables and finite types
+    -- $finiteTypes
+    Z,
+    S (..),
+
+    -- * Types and expressions
     -- $typesAndExpressions
     Type (..),
     Expr (..),
@@ -12,8 +18,10 @@ module STLC
     -- * Normalization by substitution
     -- $normalizationBySubstitution
     Sub,
-    extSub,
-    appSub,
+    ext,
+    sub,
+    sub0,
+    pattern Red,
     step,
     nbs,
 
@@ -32,20 +40,11 @@ module STLC
     prop_NbsPreservesTypes,
     prop_NbePreservesTypes,
     prop_NbsEqNbe,
-
-    -- * Finite types
-    -- $finiteTypes
-    Z,
-    S (..),
-    fromZ,
-    fromS,
-    Fin (..),
   )
 where
 
-import Control.Applicative (Alternative (..))
 import Control.Enumerable
-import Data.Coolean
+import Data.Coolean (Cool, Coolean (toCool), false, (&&&), (==>))
 
 -- $finiteTypes
 --
@@ -55,13 +54,15 @@ import Data.Coolean
 
 -- | The empty type with zero inhabitants.
 data Z
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 -- | The successor type with one more inhabitant than its type argument /n/. For example, 'Z' has zero inhabitants, so @'S' 'Z'@ has one inhabitant, 'FZ', and @'S' ('S' 'Z')@ has two inhabitants, 'FZ' and @'FS' 'FZ'@, /etc./
 data S n
-  = FZ
-  | FS n
-  deriving (Eq, Functor)
+  = -- | The number @0@.
+    FZ
+  | -- | The successor function, i.e., @'FS' n@ represents @n + 1@.
+    FS n
+  deriving (Eq, Ord, Functor)
 
 -- | The eliminator for the empty type.
 fromZ :: Z -> a
@@ -69,22 +70,42 @@ fromZ n = case n of -- No inhabitants, no cases
 
 -- | The eliminator for the successor type.
 fromS :: a -> (n -> a) -> (S n -> a)
-fromS fz fs FZ = fz
-fromS fz fs (FS n) = fs n
+fromS fz _ FZ = fz
+fromS _ fs (FS n) = fs n
 
--- | The class of finite types, which can be converted to positive integers using the 'toInt' function.
-class Fin n where
-  toInt :: n -> Int
+-- | This instance is needed to satisfy instant search, but it implements no functions.
+instance Num Z
 
-instance Fin Z where
-  toInt = fromZ
+-- | This instance is needed to satisfy the superclass constraint on integral, but it implements no functions.
+instance Real Z
 
-instance Fin n => Fin (S n) where
-  toInt = fromS 0 (succ . toInt)
+-- | This instance is needed to satisfy the superclass constraint on integral, but it implements no functions.
+instance Enum Z
 
--- | NOTE: we print finite types as numbers via the 'toInt' function of the 'Fin' class.
-instance Fin n => Show (S n) where
-  show = show . toInt
+-- | This instance is needed to satisfy instant search, but it implements no functions.
+instance Integral Z
+
+-- | This instance allows us to write deBruijn indices using numbers.
+--   However, writing indices that are out of scope results in a runtime error.
+--   It only implements 'fromInteger'.
+instance Num n => Num (S n) where
+  fromInteger 0 = FZ
+  fromInteger n = FS (fromInteger (n - 1))
+
+-- | This instance is needed to satisfy the superclass constraint on integral, but it implements no functions.
+instance Real n => Real (S n)
+
+-- | This instance is needed to satisfy the superclass constraint on integral, but it implements no functions.
+instance Enum n => Enum (S n)
+
+-- | This instance allows us to convert deBruijn indices to integers.
+--   It only implements 'toInteger'.
+instance Integral n => Integral (S n) where
+  toInteger = fromS 0 ((+ 1) . toInteger)
+
+-- | This instance shows deBruijn indices as numbers using 'toInteger'.
+instance Integral n => Show (S n) where
+  show = show . toInteger
 
 instance Enumerable Z where
   enumerate = share . aconcat $ []
@@ -104,7 +125,18 @@ data Type
 
 deriveEnumerable ''Type
 
--- | The type of expressions with /i/ free variables. Commonly, /i/ will be instantiated with a finite type, e.g., @'Expr' ('S' ('S' 'Z'))@ is the type of expressions with two free variables, @'FZ'@ and @'FS' 'FZ'@. These finite types are interpreted as deBruijn indices, which means that @'Var' 'FZ'@ is the variable bound by the nearest binder, @'Var' ('FS' 'FZ')@ is the variable bound by the bound or one up, /etc./
+-- | The type of expressions with /i/ free variables.
+--
+--   Commonly, /i/ will be instantiated with a finite type, e.g., @'Expr' ('S' ('S' 'Z'))@ is the type of expressions with two free variables, @'FZ'@ and @'FS' 'FZ'@.
+--   These finite types are interpreted as deBruijn indices. For example:
+--
+--   +---------------------------+---------------------------+-----------------------+-------------------------------------+
+--   | Haskell function          | as \(\lambda\)-expression | in DeBruijn notation  | as value of type @'Expr' 'Z'@       |
+--   +===========================+===========================+=======================+=====================================+
+--   | @\\x -> x@                | \(\lambda x.x\)           | \(\lambda.0\)         | @'Lam' ('Var' 'FZ')@                |
+--   +---------------------------+---------------------------+-----------------------+-------------------------------------+
+--   | @\\x -> \\y -> x@         | \(\lambda x.\lambda y.x\) | \(\lambda.\lambda.1\) | @'Lam' ('Lam' ('Var' ('FS' 'FZ')))@ |
+--   +---------------------------+---------------------------+-----------------------+-------------------------------------+
 data Expr i
   = -- | A variable.
     Var i
@@ -114,18 +146,23 @@ data Expr i
     Lam (Expr (S i))
   | -- | An application.
     --
-    --   Applications store the type of the argument so that type checking can be parallelized, i.e., it can immediately recur into both sub-expressions, rather than having to first infer the type of the argument.
+    --   Function applications store the type of their argument so that type checking can be parallelized, i.e., in the case for 'App', 'check' can immediately recur into both sub-expressions, rather than having to 1/st/ infer the type of the argument. This is important for efficient enumeration using 'Control.Search.search' and related functions.
     App (Expr i) (Expr i) Type
   deriving (Eq, Show, Functor)
 
 deriveEnumerable ''Expr
 
--- | Typing contexts are total maps from the deBruijn indices to types.
+-- | The type of typing contexts.
+--
+--   Typing contexts are total maps from the deBruijn indices to types.
 type Ctx i = i -> Type
 
--- | Extend a type context with one additional type.
+-- | Extend a typing context with an additional type, mapped to the 0/th/ variable.
+--
+-- > (ctx |> a) FZ     = a
+-- > (ctx |> a) (FS i) = ctx i
 (|>) :: Ctx i -> Type -> Ctx (S i)
-(|>) ctx a = fromS a ctx
+(|>) = flip fromS
 
 -- | Check if an expression has the given type under the given typing context. The algorithm is straightforward, modulo the conversion between 'Bool' and concurrent booleans, i.e., 'Cool', which is omitted here:
 --
@@ -136,34 +173,58 @@ type Ctx i = i -> Type
 check :: Ctx i -> Type -> Expr i -> Cool
 check ctx a (Var i) = toCool (a == ctx i)
 check ctx (a :-> b) (Lam e) = check (ctx |> a) b e
-check ctx _ (Lam e) = false
+check _ _ (Lam _) = false
 check ctx b (App e1 e2 a) = check ctx (a :-> b) e1 &&& check ctx a e2
 
 -- $normalizationBySubstitution
 
+-- | The type of substitutions from expressions with /i/ free variables to expressions with /j/ free variables.
+--
+--   Substitutions are total maps from deBruijn indices bound by /i/ to expressions with /j/ free variables.
 type Sub i j = i -> Expr j
 
-extSub :: Sub i j -> Sub (S i) (S j)
-extSub s = fromS (Var FZ) (fmap FS . s)
+-- | Extend a substitution with another variable, which is mapped to itself.
+ext :: Sub i j -> Sub (S i) (S j)
+ext s = fromS (Var FZ) (fmap FS . s)
 
-appSub :: Sub i j -> Expr i -> Expr j
-appSub s = \case
+-- | Apply a substitution to an expression.
+sub :: Sub i j -> Expr i -> Expr j
+sub s = \case
   Var i -> s i
-  Lam e -> Lam (appSub (extSub s) e)
-  App e1 e2 t -> App (appSub s e1) (appSub s e2) t
+  Lam e -> Lam (sub (ext s) e)
+  App e1 e2 t -> App (sub s e1) (sub s e2) t
 
+-- | Replace all occurrences of the 0/th/ variable in the 2/nd/ expression with the 1/st/ expression. For example:
+--
+-- >>> let e1 = Lam (Var 0)
+-- >>> let e2 = App (Var 0) (Lam (App (Var 1) (Var 0) Iota)) Iota
+-- >>> sub0 @Z e1 e2
+-- App (Lam (Var 0)) (Lam (App (Lam (Var 0)) (Var 0) Iota)) Iota
+sub0 :: Expr i -> Expr (S i) -> Expr i
+sub0 e = sub (fromS e Var)
+
+-- | The pattern of redexes, i.e., \((\lambda x.e_1)\;e_2\) or @'App' ('Lam' e1) e2 t@.
 pattern Red :: Expr (S i) -> Expr i -> Type -> Expr i
 pattern Red e1 e2 t = App (Lam e1) e2 t
 
+-- | Reduce the expression by one step, and return 'Just' the result. If no redex exists, return 'Nothing'.
+--
+--   The algorithm can be written as follows, using idiom brackets:
+--
+-- > step (Var n)       = Nothing
+-- > step (Lam e)       = ⟦ Lam (step e) ⟧
+-- > step (Red e1 e2 t) = ⟦ sub (fromS e2 Var) e1 ⟧
+-- > step (App e1 e2 t) = ⟦ App (step e1) e2 t ⟧ <|> ⟦ App e1 (step e2) t ⟧
 step :: Expr i -> Maybe (Expr i)
 step = \case
-  Var n -> empty
+  Var _ -> empty
   Lam e -> Lam <$> step e
-  Red e1 e2 t -> pure (appSub (fromS e2 Var) e1)
+  Red e1 e2 _ -> pure (sub (fromS e2 Var) e1)
   App e1 e2 t ->
     (App <$> step e1 <*> pure e2 <*> pure t)
       <|> (App e1 <$> step e2 <*> pure t)
 
+-- | Reduce the expression using 'step' until no more redexes exist.
 nbs :: Expr i -> Expr i
 nbs e = maybe e nbs (step e)
 
@@ -189,8 +250,8 @@ deriving instance Functor (Env i)
 
 (!) :: Env i j -> i -> Val j
 Nil ! i = fromZ i
-env :> v ! FZ = v
-env :> v ! FS i = env ! i
+_ :> v ! FZ = v
+env :> _ ! FS i = env ! i
 
 eval :: Env i j -> Expr i -> Val j
 eval env = \case
@@ -200,7 +261,7 @@ eval env = \case
 
 evalApp :: Val j -> Val j -> Type -> Val j
 evalApp (VVar j sp) v t = VVar j (SApp sp v t)
-evalApp (VLam env e) v t = eval (env :> v) e
+evalApp (VLam env e) v _ = eval (env :> v) e
 
 quote :: Val j -> Expr j
 quote = \case
