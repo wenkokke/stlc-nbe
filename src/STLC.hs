@@ -229,13 +229,13 @@ pattern Red e1 e2 t = App (Lam e1) e2 t
 --
 -- > step (Var n)       = Nothing
 -- > step (Lam e)       = ⟦ Lam (step e) ⟧
--- > step (Red e1 e2 t) = ⟦ sub (fromS e2 Var) e1 ⟧
+-- > step (Red e1 e2 t) = ⟦ sub0 e2 e1 ⟧
 -- > step (App e1 e2 t) = ⟦ App (step e1) e2 t ⟧ <|> ⟦ App e1 (step e2) t ⟧
 step :: Expr i -> Maybe (Expr i)
 step = \case
   Var _ -> empty
   Lam e -> Lam <$> step e
-  Red e1 e2 _ -> pure (sub (fromS e2 Var) e1)
+  Red e1 e2 _ -> pure (sub0 e2 e1)
   App e1 e2 t ->
     (App <$> step e1 <*> pure e2 <*> pure t)
       <|> (App e1 <$> step e2 <*> pure t)
